@@ -147,13 +147,16 @@ fn get_sky_color(rayDir: vec3f, sunDir: vec3f) -> vec3f {
     let upDot = max(rayDir.y, 0.0);
     var sky = mix(horizon, zenith, pow(upDot, 0.6));
     
+    // Sun Glow (Atmospheric Scattering around sun)
+    // Note: Sharp Sun Disk is removed from here to prevent it rendering on ground fog
     let sunDot = max(dot(rayDir, sunDir), 0.0);
-    let sunDisk = smoothstep(0.999, 0.9995, sunDot);
-    
     let sunColor = mix(vec3f(1.0, 0.3, 0.05), vec3f(1.0, 1.0, 0.9), smoothstep(0.0, 0.3, sunY));
-    let sunGlow = pow(sunDot, 128.0) * 0.6;
     
-    sky += sunColor * (sunDisk * 10.0 + sunGlow);
+    // Fade glow at night
+    let nightFade = smoothstep(-0.1, 0.0, sunDir.y);
+    let sunGlow = pow(sunDot, 128.0) * 0.6 * nightFade;
+    
+    sky += sunColor * sunGlow;
     
     return sky;
 }
@@ -264,7 +267,10 @@ fn get_light(p: vec3f, rayDir: vec3f, sunDir: vec3f, density: f32) -> vec3f {
     
     let sunColor = mix(vec3f(1.0, 0.4, 0.1), vec3f(1.0, 0.95, 0.9), smoothstep(0.0, 0.3, sunDir.y));
     
-    let finalLight = (sunColor * directLight * ph * powder * 6.0) + ambient;
+    // Fade out direct light if sun is down
+    let sunPower = smoothstep(-0.1, 0.1, sunDir.y);
+    
+    let finalLight = (sunColor * directLight * ph * powder * 6.0 * sunPower) + ambient;
     
     return finalLight * u.cloudColor;
 }
@@ -277,7 +283,17 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     
     let rayDir = normalize(u.cameraDir + screenPos.x * u.cameraRight + screenPos.y * u.cameraUp);
     
+    // Background Sky (Gradient + Glow, no sharp sun disk)
     var col = get_sky_color(rayDir, u.sunDir);
+
+    // Add Sharp Sun Disk explicitly to sky layer
+    let sunDot = max(dot(rayDir, u.sunDir), 0.0);
+    let sunDisk = smoothstep(0.999, 0.9995, sunDot);
+    let sunY = max(u.sunDir.y, -0.1);
+    let sunVis = smoothstep(-0.05, 0.05, u.sunDir.y); // Fade out when sun sets below horizon
+    let sunDiskColor = mix(vec3f(1.0, 0.3, 0.05), vec3f(1.0, 1.0, 0.9), smoothstep(0.0, 0.3, sunY));
+    
+    col += sunDiskColor * sunDisk * 10.0 * sunVis;
 
     // --- Ground Rendering ---
     if (rayDir.y < 0.0) {
@@ -294,10 +310,11 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
              }
              
              let fogDist = tGround;
-             // Ground fog adjusted to match volumetric haze scale
              let fogAmount = 1.0 - exp(-fogDist * 0.02 * (1.0 + u.haze * 5.0));
+             // Get fog color from sky function (which has NO sharp sun disk now)
              let fogColor = get_sky_color(vec3f(rayDir.x, 0.0, rayDir.z), u.sunDir);
              
+             // This overwrites the sky+disk color, ensuring sun doesn't render "behind" ground
              col = mix(gCol, fogColor, fogAmount);
         }
     }
@@ -378,21 +395,14 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
         }
         
         // --- Correct Atmospheric Blending ---
-        // We only apply fog to the accumulated cloud light and opacity.
-        // This prevents "foggy boxes" in empty sky.
-        
         let fogDensity = 0.04 * (1.0 + u.haze * 2.0);
         let T_atm = exp(-avgCloudDist * fogDensity);
         let horizonColor = get_sky_color(vec3f(rayDir.x, 0.0, rayDir.z), u.sunDir);
         
-        // The cloud's contribution is attenuated by the atmosphere in front of it.
-        // The atmosphere adds in-scattering (horizonColor) over the distance to the cloud.
-        // This in-scattering effectively obscures the background (by cloudOpacity).
-        
         let cloudOpacity = 1.0 - transmittance;
         let foggedCloud = scatteredLight * T_atm + horizonColor * (1.0 - T_atm) * cloudOpacity;
         
-        // Composite over background (which already contains full atmospheric path for infinite/ground distance)
+        // Composite over background
         col = col * transmittance + foggedCloud;
     }
     
