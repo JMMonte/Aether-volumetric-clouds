@@ -1,0 +1,5 @@
+{
+  "name": "Aether Volumetrics",
+  "description": "A hyperrealistic real-time volumetric cloud renderer powered by WebGPU. Use AI to generate weather conditions and cloudscapes.",
+  "requestFramePermissions": []
+}
